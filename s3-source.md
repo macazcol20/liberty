@@ -42,3 +42,71 @@ aws iam put-role-policy \
     }]
   }'
 ```
+
+
+
+version: 0.2
+
+env:
+  variables:
+    LIBERTY_VERSION: "26.0.0.1"
+    ECR_REPO: "liberty"
+    JAVA_TAG: "java21-openj9-ubi-minimal"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Getting AWS Account ID..."
+      - export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - export IMAGE_TAG="${LIBERTY_VERSION}-${JAVA_TAG}"
+      - echo "Account ID=$AWS_ACCOUNT_ID"
+      - echo "Region=$AWS_DEFAULT_REGION"
+      - echo "Image Tag=$IMAGE_TAG"
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - echo "Checking if ECR repository exists..."
+      - aws ecr describe-repositories --repository-names $ECR_REPO 2>/dev/null || aws ecr create-repository --repository-name $ECR_REPO
+
+  build:
+    commands:
+      - echo "Building Liberty base image..."
+      - echo "Version=$LIBERTY_VERSION"
+      - echo "Java Tag=$JAVA_TAG"
+      - echo "Base image from IBM Container Registry"
+      - |
+        cat > Dockerfile <<'DOCKERFILEEOF'
+        FROM icr.io/appcafe/websphere-liberty:kernel-java21-openj9-ubi-minimal
+
+        LABEL maintainer="cdk Middleware Team" \
+              version="26.0.0.1" \
+              description="Minimal Liberty base image - feature cache via CodeArtifact"
+
+        USER root
+
+        RUN microdnf install -y curl unzip tar gzip && \
+            microdnf clean all && \
+            chown -R 1001:0 /opt/ibm/wlp && \
+            chmod -R g+rw /opt/ibm/wlp
+
+        USER 1001
+
+        EXPOSE 9080 9443
+
+        WORKDIR /opt/ibm/wlp
+
+        CMD ["/opt/ibm/wlp/bin/server", "run", "defaultServer"]
+        DOCKERFILEEOF
+      - echo "Building Docker image..."
+      - docker build -t liberty:$IMAGE_TAG .
+      - echo "Tagging images..."
+      - docker tag liberty:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+      - docker tag liberty:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO:$JAVA_TAG-latest
+
+  post_build:
+    commands:
+      - echo "Pushing image to ECR..."
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO:$JAVA_TAG-latest
+      - echo "Liberty base image successfully pushed to ECR"
+      - echo "Image URI - $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
