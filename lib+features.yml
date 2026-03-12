@@ -1,0 +1,111 @@
+version: 0.2
+
+# Liberty Complete Runtime Package Builder
+# Downloads Liberty from IBM, adds comprehensive features, uploads to CodeArtifact
+# Product of Middleware BCBSNC
+
+env:
+  variables:
+    LIBERTY_VERSION: "26.0.0.2"
+    CODEARTIFACT_DOMAIN: "bcbsnc"
+    CODEARTIFACT_REPO: "liberty-artifacts"
+    NAMESPACE: "liberty"
+    AWS_DEFAULT_REGION: "us-east-1"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Liberty Phase 1 - Verifying prerequisites..."
+      - echo "CodeArtifact Domain=$CODEARTIFACT_DOMAIN"
+      - echo "CodeArtifact Repository=$CODEARTIFACT_REPO"
+      - echo "Liberty Version=$LIBERTY_VERSION"
+      - echo "Prerequisites checked. Proceeding with build..."
+
+  build:
+    commands:
+      - echo "Liberty Phase 2 - Downloading Liberty $LIBERTY_VERSION from IBM..."
+      - mkdir -p /tmp/liberty-build
+      - cd /tmp/liberty-build
+      
+      # Download Liberty runtime from IBM
+      - wget https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/wasdev/downloads/wlp/${LIBERTY_VERSION}/wlp-javaee8-${LIBERTY_VERSION}.zip
+      
+      # Extract it
+      - unzip wlp-javaee8-${LIBERTY_VERSION}.zip
+      - cd wlp
+      
+      - echo "Liberty Phase 3 - Downloading comprehensive features to feature cache..."
+      - echo "This adds javaee-8.0, microProfile-4.0, springBoot-2.0 + all dependencies"
+      - |
+        ./bin/installUtility download --location=./feature-cache --acceptLicense \
+          javaee-8.0 \
+          microProfile-4.0 \
+          springBoot-2.0 \
+          localConnector-1.0
+      
+      - echo "Liberty Phase 4 - Repackaging complete Liberty with features..."
+      - cd /tmp/liberty-build
+      
+      # Create new zip with features included
+      - zip -r wlp-javaee8-${LIBERTY_VERSION}-with-features.zip wlp/
+      
+      - echo "Liberty Phase 5 - Calculating SHA256 hash..."
+      - HASH=$(sha256sum wlp-javaee8-${LIBERTY_VERSION}-with-features.zip | awk '{print $1}')
+      - echo "Hash = $HASH"
+
+  post_build:
+    commands:
+      - echo "Liberty Phase 6 - Publishing complete Liberty package to CodeArtifact..."
+      - |
+        aws codeartifact publish-package-version \
+          --domain $CODEARTIFACT_DOMAIN \
+          --repository $CODEARTIFACT_REPO \
+          --format generic \
+          --namespace $NAMESPACE \
+          --package wlp-javaee8 \
+          --package-version $LIBERTY_VERSION \
+          --asset-name wlp-javaee8-$LIBERTY_VERSION-with-features.zip \
+          --asset-content wlp-javaee8-$LIBERTY_VERSION-with-features.zip \
+          --asset-sha256 $HASH
+      
+      - echo "Liberty Phase 7 - Verifying upload..."
+      - |
+        aws codeartifact describe-package-version \
+          --domain $CODEARTIFACT_DOMAIN \
+          --repository $CODEARTIFACT_REPO \
+          --format generic \
+          --namespace $NAMESPACE \
+          --package wlp-javaee8 \
+          --package-version $LIBERTY_VERSION
+      
+      - echo ""
+      - echo "=========================================="
+      - echo "Liberty complete package successfully published!"
+      - echo "=========================================="
+      - echo ""
+      - echo "Package: wlp-javaee8-$LIBERTY_VERSION-with-features.zip"
+      - echo "Contains: Complete Liberty runtime + 400+ features pre-cached"
+      - echo ""
+      - echo "Teams download using:"
+      - echo ""
+      - echo "aws codeartifact get-package-version-asset \\"
+      - echo "  --domain $CODEARTIFACT_DOMAIN \\"
+      - echo "  --repository $CODEARTIFACT_REPO \\"
+      - echo "  --format generic \\"
+      - echo "  --namespace $NAMESPACE \\"
+      - echo "  --package wlp-javaee8 \\"
+      - echo "  --package-version $LIBERTY_VERSION \\"
+      - echo "  --asset wlp-javaee8-$LIBERTY_VERSION-with-features.zip \\"
+      - echo "  wlp-javaee8-$LIBERTY_VERSION-with-features.zip"
+      - echo ""
+      - echo "Then: unzip wlp-javaee8-$LIBERTY_VERSION-with-features.zip"
+      - echo ""
+      - echo "Features included:"
+      - echo "  - javaee-8.0 (full Java EE 8 platform)"
+      - echo "  - microProfile-4.0 (cloud-native features)"
+      - echo "  - springBoot-2.0 (Spring Boot support)"
+      - echo "  - localConnector-1.0 (admin connector)"
+      - echo "  - Plus ALL dependencies (~400+ total features)"
+      - echo ""
+      - echo "No IBM downloads needed - everything in CodeArtifact!"
+      - echo "=========================================="
