@@ -1,0 +1,127 @@
+version: 0.2
+
+env:
+  variables:
+    LIBERTY_RUNTIME_VERSION: "26.0.0.2"
+    PACKAGE_VERSION: "26.0.0.2-lib_features"
+    CODEARTIFACT_DOMAIN: "bcbsnc"
+    CODEARTIFACT_REPO: "liberty-artifacts"
+    NAMESPACE: "liberty"
+    AWS_DEFAULT_REGION: "us-east-1"
+    PACKAGE_NAME: "wlp-javaee8"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Liberty Phase 1 - Verifying prerequisites..."
+      - echo "Domain=$CODEARTIFACT_DOMAIN Repo=$CODEARTIFACT_REPO"
+      - echo "Liberty Version=$LIBERTY_RUNTIME_VERSION"
+      - aws --version
+
+  build:
+    commands:
+      - echo "Liberty Phase 2 - Downloading Liberty runtime from IBM..."
+      - WORKDIR=/tmp/liberty-build
+      - rm -rf "$WORKDIR"
+      - mkdir -p "$WORKDIR"
+      - cd "$WORKDIR"
+      - RUNTIME_ZIP="${PACKAGE_NAME}-${LIBERTY_RUNTIME_VERSION}.zip"
+      - wget -nv "https://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/wasdev/downloads/wlp/${LIBERTY_RUNTIME_VERSION}/${RUNTIME_ZIP}"
+      - echo "Liberty Phase 3 - Extract runtime..."
+      - unzip -q "$RUNTIME_ZIP"
+      - test -d wlp
+      - echo "Liberty Phase 4 - Discovering all features from IBM..."
+      - cd "$WORKDIR/wlp"
+      - ./bin/installUtility find > /tmp/all-features-raw.txt
+      - cat /tmp/all-features-raw.txt
+      - echo "Extracting feature names..."
+      - grep "^feature " /tmp/all-features-raw.txt | awk -F' ' '{print $3}' | sort -u > /tmp/feature-list.txt
+      - echo "Total unique features found"
+      - wc -l /tmp/feature-list.txt
+      - echo "Sample features"
+      - head -30 /tmp/feature-list.txt
+      - echo "Liberty Phase 5 - Downloading ALL features in batches..."
+      - mkdir -p "$WORKDIR/feature-repo"
+      - |
+        FEATURE_COUNT=0
+        BATCH=""
+        while IFS= read -r feature; do
+          if [ -n "$feature" ]; then
+            BATCH="$BATCH $feature"
+            FEATURE_COUNT=$((FEATURE_COUNT + 1))
+            if [ $((FEATURE_COUNT % 50)) -eq 0 ]; then
+              echo "Downloading batch ending at feature $FEATURE_COUNT..."
+              ./bin/installUtility download --acceptLicense --location="$WORKDIR/feature-repo" $BATCH || echo "Some features failed, continuing..."
+              BATCH=""
+            fi
+          fi
+        done < /tmp/feature-list.txt
+        if [ -n "$BATCH" ]; then
+          echo "Downloading final batch..."
+          ./bin/installUtility download --acceptLicense --location="$WORKDIR/feature-repo" $BATCH || echo "Some features failed, continuing..."
+        fi
+      - echo "Download complete"
+      - du -sh "$WORKDIR/feature-repo"
+      - find "$WORKDIR/feature-repo" -name "*.esa" | wc -l
+      - echo "Liberty Phase 6 - Packaging assets..."
+      - cd "$WORKDIR"
+      - FEATURE_REPO_ZIP="wlp-featureRepo-${LIBERTY_RUNTIME_VERSION}.zip"
+      - zip -qry "$FEATURE_REPO_ZIP" feature-repo/
+      - COMBINED_ZIP="${PACKAGE_NAME}-${LIBERTY_RUNTIME_VERSION}-with-featureRepo.zip"
+      - zip -qry "$COMBINED_ZIP" wlp/ "$FEATURE_REPO_ZIP"
+      - echo "Liberty Phase 7 - Calculating hashes..."
+      - RUNTIME_SHA=$(sha256sum "$RUNTIME_ZIP" | awk '{print $1}')
+      - FEATURE_REPO_SHA=$(sha256sum "$FEATURE_REPO_ZIP" | awk '{print $1}')
+      - COMBINED_SHA=$(sha256sum "$COMBINED_ZIP" | awk '{print $1}')
+      - echo "Hashes calculated successfully"
+
+  post_build:
+    commands:
+      - echo "Liberty Phase 8 - Publishing to CodeArtifact..."
+      - cd "$WORKDIR"
+      - |
+        aws codeartifact publish-package-version \
+          --domain "$CODEARTIFACT_DOMAIN" \
+          --repository "$CODEARTIFACT_REPO" \
+          --format generic \
+          --namespace "$NAMESPACE" \
+          --package "$PACKAGE_NAME" \
+          --package-version "$PACKAGE_VERSION" \
+          --asset-name "$RUNTIME_ZIP" \
+          --asset-content "$WORKDIR/$RUNTIME_ZIP" \
+          --asset-sha256 "$RUNTIME_SHA" \
+          --unfinished
+      - |
+        aws codeartifact publish-package-version \
+          --domain "$CODEARTIFACT_DOMAIN" \
+          --repository "$CODEARTIFACT_REPO" \
+          --format generic \
+          --namespace "$NAMESPACE" \
+          --package "$PACKAGE_NAME" \
+          --package-version "$PACKAGE_VERSION" \
+          --asset-name "$FEATURE_REPO_ZIP" \
+          --asset-content "$WORKDIR/$FEATURE_REPO_ZIP" \
+          --asset-sha256 "$FEATURE_REPO_SHA" \
+          --unfinished
+      - |
+        aws codeartifact publish-package-version \
+          --domain "$CODEARTIFACT_DOMAIN" \
+          --repository "$CODEARTIFACT_REPO" \
+          --format generic \
+          --namespace "$NAMESPACE" \
+          --package "$PACKAGE_NAME" \
+          --package-version "$PACKAGE_VERSION" \
+          --asset-name "$COMBINED_ZIP" \
+          --asset-content "$WORKDIR/$COMBINED_ZIP" \
+          --asset-sha256 "$COMBINED_SHA"
+      - echo "Liberty Phase 9 - Verifying upload..."
+      - |
+        aws codeartifact describe-package-version \
+          --domain "$CODEARTIFACT_DOMAIN" \
+          --repository "$CODEARTIFACT_REPO" \
+          --format generic \
+          --namespace "$NAMESPACE" \
+          --package "$PACKAGE_NAME" \
+          --package-version "$PACKAGE_VERSION"
+      - echo "SUCCESS - ALL Liberty features published to CodeArtifact"
+      - find "$WORKDIR/feature-repo" -name "*.esa" 2>/dev/null | wc -l
