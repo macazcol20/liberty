@@ -1,0 +1,28 @@
+## ════════════════════════════════════════════════════════════════════════════
+## STEP 4 — Verify Keycloak issuer is https://
+## ════════════════════════════════════════════════════════════════════════════
+
+# Must return: "issuer": "https://keycloak.xxxxxx/realms/derrer"
+# If it returns http:// the KC_PROXY_HEADERS setting is not working — check pod env vars
+curl https://keycloak.s3gis.be/realms/derrer/.well-known/openid-configuration \
+  | python3 -m json.tool | grep issuer
+
+## ════════════════════════════════════════════════════════════════════════════
+## STEP 5 — Create Keycloak user
+## ════════════════════════════════════════════════════════════════════════════
+
+kubectl exec -it keycloak-keycloak-0 -n derrer -- \
+  /opt/keycloak/bin/kcadm.sh config credentials \
+  --server http://localhost:8080 --realm master --user admin --password secret
+
+kubectl exec -it keycloak-keycloak-0 -n derrer -- \
+  /opt/keycloak/bin/kcadm.sh create users -r derrer \
+  -s username=cafanwi \
+  -s email=cafanwi@xxxx.com \
+  -s firstName=Cafanwi \
+  -s lastName=Admin \
+  -s enabled=true
+
+kubectl exec -it keycloak-keycloak-0 -n derrer -- \
+  /opt/keycloak/bin/kcadm.sh set-password -r derrer \
+  --username cafanwi --new-password "secret!"
